@@ -68,7 +68,7 @@ g++ -std=c++17 -O2 -Wall -DUNICODE -D_UNICODE -mwindows -municode ^
 
 或者直接双击 `build.bat`。
 
-## 技术要点
+## 其他说明
 
 - 使用 `WA_TransparentForMouseEvents` + `WA_NativeWindow` 实现鼠标穿透的叠加层
 - 通过 Qt 元对象系统（`QApplication::allWidgets`）发现编辑器控件
