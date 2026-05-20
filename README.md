@@ -71,7 +71,7 @@ g++ -std=c++17 -O2 -Wall -DUNICODE -D_UNICODE -mwindows -municode ^
 
 Or double-click `build.bat`.
 
-## Technical notes
+## other description 
 
 - Uses `WA_TransparentForMouseEvents` + `WA_NativeWindow` for click-through overlays
 - Finds editors via Qt meta-object system (`QApplication::allWidgets`)
