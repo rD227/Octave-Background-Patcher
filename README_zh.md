@@ -16,6 +16,9 @@ OverlayWidget（背景图，鼠标穿透）
 QsciScintilla 编辑器（正常渲染，不受影响）
 ```
 
+![this](Pictures/屏幕截图%202026-05-20%20182630.png)
+![fullScreen](Pictures/屏幕截图%202026-05-20%20190125.png)
+
 ## 快速开始
 
 1. 从 [Releases](../../releases) 下载 `patcher.exe` 和 `bgpatch.dll`
