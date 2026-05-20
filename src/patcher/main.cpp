@@ -42,22 +42,19 @@ static bool FileExists(const std::wstring &path)
 
 static std::wstring GetOctaveRoot(const std::wstring &exeDir)
 {
-    // exeDir = <octave_root>\home\octave-bg-patcher
-    // Go up 2 levels to reach <octave_root>
+    // Walk up the directory tree looking for the Octave root.
+    // Marker files: octave.vbs or mingw64\bin\octave-gui.exe
     std::wstring dir = exeDir;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 8; i++) {  // search up to 8 levels
+        if (FileExists(dir + L"\\octave.vbs") ||
+            FileExists(dir + L"\\mingw64\\bin\\octave-gui.exe")) {
+            return dir;
+        }
         auto pos = dir.rfind(L'\\');
         if (pos == std::wstring::npos) break;
         dir.resize(pos);
     }
-    // Verify by checking for octave.vbs marker file
-    std::wstring marker = dir + L"\\octave.vbs";
-    if (!FileExists(marker)) {
-        // Try one more level up as fallback
-        auto pos = dir.rfind(L'\\');
-        if (pos != std::wstring::npos) dir.resize(pos);
-    }
-    return dir;
+    return L"";  // not found — caller will show an error
 }
 
 // ─── Config I/O ──────────────────────────────────────────────────────
@@ -229,8 +226,17 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         LocalFree(argv);
     }
 
+    if (octaveRoot.empty()) {
+        MessageBoxW(nullptr,
+            L"Cannot find Octave installation.\n\n"
+            L"Make sure patcher.exe and bgpatch.dll are placed inside\n"
+            L"the Octave installation directory, or in a subfolder of it.\n\n"
+            L"For example:  <octave_root>\\home\\octave-bg-patcher\\",
+            L"Octave Not Found", MB_ICONERROR);
+        return 1;
+    }
+
     if (silent) {
-        // Direct launch without UI
         SaveConfig(iniPath, cfg);
         LaunchOctave(octaveRoot, dllPath);
         return 0;

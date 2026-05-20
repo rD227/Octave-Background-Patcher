@@ -19,7 +19,7 @@ QsciScintilla editor (renders normally, unaffected)
 ## Quick start
 
 1. Download `patcher.exe` and `bgpatch.dll` from [Releases](../../releases)
-2. Place both files in the **same folder**
+2. Place both files together in **any folder inside the Octave installation** (e.g. `octave-11.1.0-w64\home\octave-bg-patcher\`)
 3. Run `patcher.exe`
 4. Select a background image when prompted
 5. Click **Yes** to launch Octave
