@@ -44,6 +44,7 @@ Opacity=30       ; 0 = invisible, 100 = fully opaque
 Dimming=40       ; 0 = no darkening, 100 = solid black
 ScaleMode=1      ; 0=Fit  1=Fill  2=Stretch  3=Center  4=Tile
 Scope=1          ; 1 = editor panes only, 2 = entire window
+DebugLog=0       ; 0 = off, 1 = write bgpatch.log for troubleshooting
 ```
 
 Changes take effect within 3 seconds — no restart needed.

@@ -8,8 +8,9 @@
 #include <QSettings>
 #include <QPointer>
 
-// Shared logging (implemented in main.cpp, used by all translation units)
+// Shared logging (implemented in main.cpp)
 extern void logWrite(const char *fmt, ...);
+extern void logSetEnabled(bool on);
 
 // Scope: where to apply the background image
 enum Scope {

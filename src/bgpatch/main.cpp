@@ -12,6 +12,9 @@
 // Writes to <DLL directory>\bgpatch.log (guaranteed writable).
 
 static WCHAR g_logPathW[MAX_PATH] = {};
+static bool  g_logEnabled = false;   // controlled by bgpatch.ini [Background] DebugLog
+
+void logSetEnabled(bool on) { g_logEnabled = on; }
 
 static void logInit(HINSTANCE hinstDLL)
 {
@@ -23,6 +26,8 @@ static void logInit(HINSTANCE hinstDLL)
 
 void logWrite(const char *fmt, ...)
 {
+    if (!g_logEnabled) return;
+
     char buf[1024];
     va_list args;
     va_start(args, fmt);

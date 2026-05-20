@@ -402,6 +402,8 @@ void BackgroundManager::reloadSettings()
     int dimming   = settings.value("Background/Dimming",   30).toInt();
     int scaleMode = settings.value("Background/ScaleMode", 1).toInt();
     int scopeVal  = settings.value("Background/Scope",     1).toInt();
+    int debugLog  = settings.value("Background/DebugLog",  0).toInt();
+    logSetEnabled(debugLog != 0);
 
     Scope newScope = (scopeVal == 2) ? ScopeWindow : ScopeEditor;
 
