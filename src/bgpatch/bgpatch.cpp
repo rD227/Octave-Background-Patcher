@@ -16,14 +16,43 @@
 
 // ─── OverlayWidget ───────────────────────────────────────────────────
 
-OverlayWidget::OverlayWidget(QWidget *parent)
-    : QWidget(parent)
+OverlayWidget::OverlayWidget(bool useNative, QWidget *parent)
+    : QWidget(parent), m_native(useNative)
 {
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setAttribute(Qt::WA_TranslucentBackground);
     setFocusPolicy(Qt::NoFocus);
-    setAttribute(Qt::WA_NativeWindow);
+    // Native window only needed for editor mode (competes with QScintilla HWND).
+    // Window mode uses plain Qt widgets — native windows there block mouse input.
+    if (m_native)
+        setAttribute(Qt::WA_NativeWindow);
     raise();
+}
+
+bool OverlayWidget::event(QEvent *e)
+{
+    // For non-native overlays (Scope=2), explicitly reject all input events
+    // so Qt propagates them to the widgets underneath.  WA_TransparentForMouseEvents
+    // handles hit testing, but an explicit ignore covers edge cases with
+    // QMainWindow's managed children (dock widgets, menu bar, etc.).
+    if (!m_native) {
+        switch (e->type()) {
+        case QEvent::MouseButtonPress:   case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick: case QEvent::MouseMove:
+        case QEvent::Wheel:              case QEvent::KeyPress:
+        case QEvent::KeyRelease:         case QEvent::HoverEnter:
+        case QEvent::HoverLeave:         case QEvent::HoverMove:
+        case QEvent::Enter:              case QEvent::Leave:
+        case QEvent::FocusIn:            case QEvent::FocusOut:
+        case QEvent::ContextMenu:        case QEvent::DragEnter:
+        case QEvent::DragLeave:          case QEvent::DragMove:
+        case QEvent::Drop:
+            e->ignore();
+            return false;
+        default: break;
+        }
+    }
+    return QWidget::event(e);
 }
 
 void OverlayWidget::setImage(const QImage &img, int opacity, int dimming, int scaleMode)
@@ -126,7 +155,7 @@ void BackgroundImageEffect::attachToEditor(QWidget *editorWidget)
     QSize vs = area->maximumViewportSize();
     if (vs.isEmpty()) vs = vp->size();
 
-    m_overlay = new OverlayWidget(vp);
+    m_overlay = new OverlayWidget(true, vp);  // native HWND to beat QScintilla
     m_overlay->resize(vs);
     m_overlay->move(0, 0);
     m_overlay->show();
@@ -163,24 +192,37 @@ void BackgroundImageEffect::attachToWindow(QWidget *mainWindow)
     m_editor = mainWindow;
     if (!m_editor) return;
 
-    QSize sz = m_editor->size();
+    // CREATE A SEPARATE TOP-LEVEL WINDOW (parent = nullptr).
+    // This avoids QMainWindow's custom event dispatch which would otherwise
+    // intercept mouse events before they could pass through the overlay.
+    m_overlay = new OverlayWidget(false, nullptr);
 
-    // Overlay parented directly to the QMainWindow so it covers the
-    // entire client area (menu bar, toolbars, dock widgets, status bar).
-    m_overlay = new OverlayWidget(m_editor);
-    m_overlay->resize(sz);
-    m_overlay->move(0, 0);
+    // Frameless tool window: no taskbar entry, stays above the target
+    m_overlay->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint |
+                               Qt::WindowStaysOnTopHint);
+    m_overlay->setAttribute(Qt::WA_TranslucentBackground);
+    m_overlay->setAttribute(Qt::WA_ShowWithoutActivating);
+    m_overlay->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_overlay->setAttribute(Qt::WA_NativeWindow);  // needed for WS_EX_... below
+
+    // Win32: layered (per-pixel alpha) + transparent (mouse passthrough)
+    HWND hwnd = reinterpret_cast<HWND>(m_overlay->winId());
+    LONG ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+                      ex | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+
+    // Position over the main window in screen coordinates
+    repositionOverlay();
     m_overlay->show();
-    m_overlay->raise();
-    if (m_overlay->internalWinId())
-        SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
-                     HWND_TOP, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
-    logWrite("Overlay created (window): size=(%d,%d) imageNull=%d opacity=%d",
-             sz.width(), sz.height(), (int)m_image.isNull(), m_opacity);
+    logWrite("Overlay created (window-top-level): pos=(%d,%d) size=(%d,%d) imageNull=%d opacity=%d",
+             m_overlay->x(), m_overlay->y(),
+             m_overlay->width(), m_overlay->height(),
+             (int)m_image.isNull(), m_opacity);
 
     updateOverlay();
+
+    // Track the main window when it moves or resizes
     m_editor->installEventFilter(this);
 }
 
@@ -222,26 +264,33 @@ bool BackgroundImageEffect::eventFilter(QObject *obj, QEvent *event)
         return false;
     }
 
-    if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
-        if (m_scope == ScopeWindow) {
-            // Window mode: overlay fills the entire main window
-            m_overlay->resize(m_editor->size());
-            m_overlay->move(0, 0);
-            m_overlay->raise();
-            if (m_overlay->internalWinId())
-                SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
-                             HWND_TOP, 0, 0, 0, 0,
-                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        } else {
-            repositionOverlay();
-        }
+    if (event->type() == QEvent::Resize || event->type() == QEvent::Move ||
+        event->type() == QEvent::Show) {
+        repositionOverlay();
     }
     return false;
 }
 
 void BackgroundImageEffect::repositionOverlay()
 {
-    if (!m_overlay || !m_editor || m_scope != ScopeEditor) return;
+    if (!m_overlay || !m_editor) return;
+
+    if (m_scope == ScopeWindow) {
+        // Position the independent top-level overlay over the main window
+        QPoint topLeft = m_editor->mapToGlobal(QPoint(0, 0));
+        QSize sz = m_editor->size();
+        m_overlay->setGeometry(topLeft.x(), topLeft.y(), sz.width(), sz.height());
+        m_overlay->raise();
+
+        // Keep on top without stealing focus
+        if (m_overlay->internalWinId())
+            SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
+                         HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        return;
+    }
+
+    // Editor mode: scroll-aware positioning within the viewport
     auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
     if (!area || !area->viewport()) return;
 

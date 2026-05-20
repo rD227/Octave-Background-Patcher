@@ -26,18 +26,20 @@ enum Scope {
 class OverlayWidget : public QWidget
 {
 public:
-    explicit OverlayWidget(QWidget *parent = nullptr);
+    explicit OverlayWidget(bool useNative, QWidget *parent = nullptr);
 
     void setImage(const QImage &img, int opacity, int dimming, int scaleMode);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    bool event(QEvent *e) override;
 
 private:
     QImage m_image;
     int    m_opacity   = 30;
     int    m_dimming   = 30;
     int    m_scaleMode = 1;
+    bool   m_native    = false;
 };
 
 // ─── Background effect manager ──────────────────────────────────────
