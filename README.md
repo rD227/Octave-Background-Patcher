@@ -6,7 +6,7 @@ Works on **Windows x86_64** with Octave 11.1.0 (Qt6 + QScintilla builds).
 
 [中文说明 →](README_zh.md)
 
-![this](Pictures/屏幕截图 2026-05-20 182630.png)
+![this]("Pictures/屏幕截图 2026-05-20 182630.png")
 
 
 ## How it works
