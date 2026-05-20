@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QSettings>
 #include <QScrollBar>
+#include <QMainWindow>
 
 #include <windows.h>
 
@@ -18,18 +19,10 @@
 OverlayWidget::OverlayWidget(QWidget *parent)
     : QWidget(parent)
 {
-    // Mouse events pass straight through to whatever is behind us
     setAttribute(Qt::WA_TransparentForMouseEvents);
-    // Visual transparency: only the pixels we paint are visible
     setAttribute(Qt::WA_TranslucentBackground);
-    // Don't accept keyboard focus — keystrokes go to the editor
     setFocusPolicy(Qt::NoFocus);
-    // CRITICAL: Force a native HWND.  QScintilla may use native child
-    // windows for the editing surface, which always paint above non-native
-    // Qt widgets.  A native overlay can be stacked above them.
     setAttribute(Qt::WA_NativeWindow);
-
-    // Ensure we are on top of sibling native windows
     raise();
 }
 
@@ -50,19 +43,18 @@ void OverlayWidget::paintEvent(QPaintEvent *)
     QSize sz = size();
     if (sz.isEmpty()) return;
 
-    // ── Scale the image ──────────────────────────────────────
     QImage scaled;
     switch (m_scaleMode) {
-    case 0: // Fit — scale to fit, keep aspect
+    case 0: // Fit
         scaled = m_image.scaled(sz, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         break;
-    case 1: // Fill — scale and crop to fill (default)
+    case 1: // Fill (default)
         scaled = m_image.scaled(sz, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
         break;
-    case 2: // Stretch — ignore aspect ratio
+    case 2: // Stretch
         scaled = m_image.scaled(sz, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
         break;
-    case 3: // Center — no scaling, centered
+    case 3: // Center
         scaled = QImage(sz, QImage::Format_ARGB32);
         scaled.fill(Qt::transparent);
         {
@@ -72,7 +64,7 @@ void OverlayWidget::paintEvent(QPaintEvent *)
             sp.drawImage(ox, oy, m_image);
         }
         break;
-    case 4: // Tile — repeat
+    case 4: // Tile
         scaled = QImage(sz, QImage::Format_ARGB32);
         scaled.fill(Qt::transparent);
         {
@@ -87,14 +79,12 @@ void OverlayWidget::paintEvent(QPaintEvent *)
         break;
     }
 
-    // ── Draw image with user opacity ─────────────────────────
     painter.setOpacity(m_opacity / 100.0);
 
     int ox = (sz.width()  - scaled.width())  / 2;
     int oy = (sz.height() - scaled.height()) / 2;
     painter.drawImage(ox, oy, scaled);
 
-    // ── Dimming overlay on top ───────────────────────────────
     painter.setOpacity(1.0);
     if (m_dimming > 0) {
         painter.fillRect(rect(), QColor(0, 0, 0, m_dimming * 255 / 100));
@@ -103,22 +93,23 @@ void OverlayWidget::paintEvent(QPaintEvent *)
 
 // ─── BackgroundImageEffect ───────────────────────────────────────────
 
-BackgroundImageEffect::BackgroundImageEffect(QObject *parent)
-    : QObject(parent) {}
+BackgroundImageEffect::BackgroundImageEffect(Scope scope, QObject *parent)
+    : QObject(parent), m_scope(scope) {}
 
 BackgroundImageEffect::~BackgroundImageEffect()
 {
     detach();
-    // If editor is still alive, remove event filter
     if (m_editor) {
         m_editor->removeEventFilter(this);
-        auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
-        if (area && area->viewport())
-            area->viewport()->removeEventFilter(this);
+        if (m_scope == ScopeEditor) {
+            auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
+            if (area && area->viewport())
+                area->viewport()->removeEventFilter(this);
+        }
     }
 }
 
-void BackgroundImageEffect::attach(QWidget *editorWidget)
+void BackgroundImageEffect::attachToEditor(QWidget *editorWidget)
 {
     if (m_editor == editorWidget) return;
     detach();
@@ -128,15 +119,10 @@ void BackgroundImageEffect::attach(QWidget *editorWidget)
     auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
     QWidget *vp = area ? area->viewport() : nullptr;
     if (!vp) {
-        logWrite("WARN: No viewport found for editor %p", (void*)m_editor);
+        logWrite("WARN: No viewport found for editor %p", (void*)m_editor.data());
         return;
     }
 
-    // IMPORTANT: Parent the overlay to the VIEWPORT, not the outer
-    // QAbstractScrollArea.  The viewport covers the entire visible area
-    // and QAbstractScrollArea manages it as a special child that always
-    // sits on top of ordinary children.  By parenting to the viewport
-    // we guarantee the overlay paints above Scintilla's content.
     QSize vs = area->maximumViewportSize();
     if (vs.isEmpty()) vs = vp->size();
 
@@ -145,97 +131,86 @@ void BackgroundImageEffect::attach(QWidget *editorWidget)
     m_overlay->move(0, 0);
     m_overlay->show();
     m_overlay->raise();
-
-    // Win32: force overlay HWND to the top of the z-order
-    if (m_overlay->internalWinId()) {
+    if (m_overlay->internalWinId())
         SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
                      HWND_TOP, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
 
-    logWrite("Overlay created: size=(%d,%d) vpSize=(%d,%d) maxVp=(%d,%d) imageNull=%d opacity=%d dimming=%d",
+    logWrite("Overlay created (editor): size=(%d,%d) vpSize=(%d,%d) imageNull=%d opacity=%d",
              vs.width(), vs.height(),
              vp->size().width(), vp->size().height(),
-             area->maximumViewportSize().width(), area->maximumViewportSize().height(),
-             (int)m_image.isNull(), m_opacity, m_dimming);
+             (int)m_image.isNull(), m_opacity);
 
     updateOverlay();
 
-    // Track resize on both the editor and the viewport
     m_editor->installEventFilter(this);
     vp->installEventFilter(this);
 
-    // Track scroll changes: keep the overlay covering the visible area
     if (area->verticalScrollBar()) {
         QObject::connect(area->verticalScrollBar(), &QScrollBar::valueChanged,
-                         [this](int) {
-            repositionOverlay();
-        });
+                         [this](int) { repositionOverlay(); });
     }
     if (area->horizontalScrollBar()) {
         QObject::connect(area->horizontalScrollBar(), &QScrollBar::valueChanged,
-                         [this](int) {
-            repositionOverlay();
-        });
+                         [this](int) { repositionOverlay(); });
     }
+}
+
+void BackgroundImageEffect::attachToWindow(QWidget *mainWindow)
+{
+    if (m_editor == mainWindow) return;
+    detach();
+    m_editor = mainWindow;
+    if (!m_editor) return;
+
+    QSize sz = m_editor->size();
+
+    // Overlay parented directly to the QMainWindow so it covers the
+    // entire client area (menu bar, toolbars, dock widgets, status bar).
+    m_overlay = new OverlayWidget(m_editor);
+    m_overlay->resize(sz);
+    m_overlay->move(0, 0);
+    m_overlay->show();
+    m_overlay->raise();
+    if (m_overlay->internalWinId())
+        SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
+                     HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+    logWrite("Overlay created (window): size=(%d,%d) imageNull=%d opacity=%d",
+             sz.width(), sz.height(), (int)m_image.isNull(), m_opacity);
+
+    updateOverlay();
+    m_editor->installEventFilter(this);
 }
 
 void BackgroundImageEffect::detach()
 {
-    // m_overlay is a child widget — it may already be deleted by Qt
-    // when the editor/viewport was destroyed.  QPointer handles this.
     if (m_overlay) {
         m_overlay->deleteLater();
         m_overlay = nullptr;
     }
     if (m_editor) {
         m_editor->removeEventFilter(this);
-        auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
-        if (area && area->viewport()) {
-            area->viewport()->removeEventFilter(this);
+        if (m_scope == ScopeEditor) {
+            auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
+            if (area && area->viewport())
+                area->viewport()->removeEventFilter(this);
         }
         m_editor = nullptr;
     }
 }
 
-void BackgroundImageEffect::repositionOverlay()
+bool BackgroundImageEffect::isAlive() const
 {
-    if (!m_overlay || !m_editor) return;
-    auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
-    if (!area || !area->viewport()) return;
-
-    // Overlay lives in viewport coordinates.
-    // When scrolled, the viewport shifts to (-sx, -sy) relative to the
-    // scroll area.  We place the overlay at (+sx, +sy) in viewport
-    // coords so it stays at the origin of the VISIBLE area.
-    int sx = area->horizontalScrollBar() ? area->horizontalScrollBar()->value() : 0;
-    int sy = area->verticalScrollBar()   ? area->verticalScrollBar()->value()   : 0;
-
-    // Size must be the VISIBLE viewport area, not the full content extent.
-    // maximumViewportSize() gives the space available (minus scrollbars).
-    QSize vs = area->maximumViewportSize();
-    if (vs.isEmpty()) vs = area->viewport()->size();
-
-    m_overlay->resize(vs);
-    m_overlay->move(sx, sy);
-    m_overlay->raise();
-
-    // Force Win32 z-order: ensure our native HWND sits above the Scintilla
-    // native child window (if any).
-    if (m_overlay->internalWinId()) {
-        SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
-                     HWND_TOP, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
+    return !m_editor.isNull();
 }
 
 bool BackgroundImageEffect::eventFilter(QObject *obj, QEvent *event)
 {
-    // If either the editor or overlay was already destroyed, bail out.
     if (!m_editor || !m_overlay)
         return false;
 
-    // Editor/viewport being destroyed — clean up our references
     if (event->type() == QEvent::Destroy) {
         if (obj == m_editor.data()) {
             m_editor = nullptr;
@@ -247,11 +222,43 @@ bool BackgroundImageEffect::eventFilter(QObject *obj, QEvent *event)
         return false;
     }
 
-    // Resize / Show — keep overlay covering the editor
     if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
-        repositionOverlay();
+        if (m_scope == ScopeWindow) {
+            // Window mode: overlay fills the entire main window
+            m_overlay->resize(m_editor->size());
+            m_overlay->move(0, 0);
+            m_overlay->raise();
+            if (m_overlay->internalWinId())
+                SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
+                             HWND_TOP, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        } else {
+            repositionOverlay();
+        }
     }
     return false;
+}
+
+void BackgroundImageEffect::repositionOverlay()
+{
+    if (!m_overlay || !m_editor || m_scope != ScopeEditor) return;
+    auto *area = static_cast<QAbstractScrollArea*>(m_editor.data());
+    if (!area || !area->viewport()) return;
+
+    int sx = area->horizontalScrollBar() ? area->horizontalScrollBar()->value() : 0;
+    int sy = area->verticalScrollBar()   ? area->verticalScrollBar()->value()   : 0;
+
+    QSize vs = area->maximumViewportSize();
+    if (vs.isEmpty()) vs = area->viewport()->size();
+
+    m_overlay->resize(vs);
+    m_overlay->move(sx, sy);
+    m_overlay->raise();
+
+    if (m_overlay->internalWinId())
+        SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
+                     HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 void BackgroundImageEffect::updateOverlay()
@@ -259,13 +266,10 @@ void BackgroundImageEffect::updateOverlay()
     if (m_overlay) {
         m_overlay->setImage(m_image, m_opacity, m_dimming, m_scaleMode);
         m_overlay->raise();
-
-        // Ensure native HWND stay on top of Scintilla native windows
-        if (m_overlay->internalWinId()) {
+        if (m_overlay->internalWinId())
             SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
                          HWND_TOP, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
     }
 }
 
@@ -327,7 +331,6 @@ BackgroundManager::BackgroundManager(QObject *parent)
 void BackgroundManager::init()
 {
     reloadSettings();
-
     QTimer::singleShot(1000, [this]() { scanAndAttach(); });
     m_scanTimer->start();
 }
@@ -345,16 +348,17 @@ void BackgroundManager::reloadSettings()
 
     QSettings settings(iniPath, QSettings::IniFormat);
     QString imagePath = settings.value("Background/Image", "").toString();
-    // QSettings INI parser treats backslash as escape char.
-    // patcher.exe now saves with forward slashes; convert back for Windows.
     imagePath.replace(QLatin1Char('/'), QLatin1Char('\\'));
     int opacity   = settings.value("Background/Opacity",   30).toInt();
     int dimming   = settings.value("Background/Dimming",   30).toInt();
     int scaleMode = settings.value("Background/ScaleMode", 1).toInt();
+    int scopeVal  = settings.value("Background/Scope",     1).toInt();
+
+    Scope newScope = (scopeVal == 2) ? ScopeWindow : ScopeEditor;
+
+    bool scopeChanged = (newScope != m_currentScope);
 
     for (auto *fx : m_effects) {
-        if (fx->image().isNull() && imagePath.isEmpty())
-            continue; // nothing to update
         fx->setImage(imagePath);
         fx->setOpacity(opacity);
         fx->setDimming(dimming);
@@ -365,13 +369,22 @@ void BackgroundManager::reloadSettings()
     m_pendingOpacity   = opacity;
     m_pendingDimming   = dimming;
     m_pendingScaleMode = scaleMode;
+
+    if (scopeChanged) {
+        logWrite("Scope changed: %d -> %d, re-attaching", (int)m_currentScope, (int)newScope);
+        m_currentScope = newScope;
+        // Clear everything and re-scan
+        for (auto *fx : m_effects)
+            delete fx;
+        m_effects.clear();
+        m_attached.clear();
+        scanAndAttach();
+    }
 }
 
 void BackgroundManager::scanAndAttach()
 {
-    static bool firstScan = true;
-
-    // Remove effects whose editors have been closed
+    // Clean up dead effects
     for (int i = m_effects.size() - 1; i >= 0; i--) {
         if (!m_effects[i]->isAlive()) {
             delete m_effects[i];
@@ -380,6 +393,17 @@ void BackgroundManager::scanAndAttach()
         }
     }
 
+    if (m_currentScope == ScopeWindow) {
+        attachWindow();
+    } else {
+        attachEditors();
+    }
+}
+
+void BackgroundManager::attachEditors()
+{
+    static bool firstScan = true;
+
     QWidgetList all = QApplication::allWidgets();
     for (QWidget *w : all) {
         if (m_attached.contains(w)) continue;
@@ -387,10 +411,8 @@ void BackgroundManager::scanAndAttach()
         const QMetaObject *mo = w->metaObject();
         bool isScintilla = false;
         QString matchedName;
-
         while (mo) {
             QString cn = QString::fromLatin1(mo->className());
-            // QsciScintilla may also appear under namespaced subclasses
             if (cn == QLatin1String("QsciScintilla") ||
                 cn == QLatin1String("QsciScintillaBase") ||
                 cn.contains(QLatin1String("Scintilla"))) {
@@ -401,7 +423,6 @@ void BackgroundManager::scanAndAttach()
             mo = mo->superClass();
         }
 
-        // First scan: dump widget tree for diagnostics
         if (firstScan && w->isWidgetType() && w->isVisible()) {
             const QMetaObject *dmo = w->metaObject();
             QString chain;
@@ -416,26 +437,58 @@ void BackgroundManager::scanAndAttach()
 
         if (isScintilla) {
             QByteArray mn = matchedName.toUtf8();
-            logWrite("FOUND Scintilla editor: %p  class=%s  size=(%d,%d)  visible=%d",
+            logWrite("FOUND editor: %p  class=%s  size=(%d,%d)  visible=%d",
                      (void*)w, mn.constData(),
-                     w->size().width(), w->size().height(),
-                     (int)w->isVisible());
+                     w->size().width(), w->size().height(), (int)w->isVisible());
 
-            auto *fx = new BackgroundImageEffect(this);
+            auto *fx = new BackgroundImageEffect(ScopeEditor, this);
             fx->setImage(m_pendingImage);
             fx->setOpacity(m_pendingOpacity);
             fx->setDimming(m_pendingDimming);
             fx->setScaleMode(m_pendingScaleMode);
-            fx->attach(w);
+            fx->attachToEditor(w);
 
             m_effects.append(fx);
             m_attached.append(w);
 
             QByteArray img = m_pendingImage.toUtf8();
-            logWrite("Attached overlay. image=%s opacity=%d",
-                     img.isEmpty() ? "(empty)" : img.constData(),
-                     m_pendingOpacity);
+            logWrite("Attached (editor). image=%s opacity=%d",
+                     img.isEmpty() ? "(empty)" : img.constData(), m_pendingOpacity);
         }
     }
     firstScan = false;
+}
+
+void BackgroundManager::attachWindow()
+{
+    // Find the main window — there should be exactly one
+    QWidgetList all = QApplication::allWidgets();
+    for (QWidget *w : all) {
+        const QMetaObject *mo = w->metaObject();
+        while (mo) {
+            QString cn = QString::fromLatin1(mo->className());
+            if (cn == QLatin1String("octave::main_window")) {
+                if (!m_attached.contains(w)) {
+                    logWrite("FOUND main window: %p  size=(%d,%d)",
+                             (void*)w, w->size().width(), w->size().height());
+
+                    auto *fx = new BackgroundImageEffect(ScopeWindow, this);
+                    fx->setImage(m_pendingImage);
+                    fx->setOpacity(m_pendingOpacity);
+                    fx->setDimming(m_pendingDimming);
+                    fx->setScaleMode(m_pendingScaleMode);
+                    fx->attachToWindow(w);
+
+                    m_effects.append(fx);
+                    m_attached.append(w);
+
+                    QByteArray img = m_pendingImage.toUtf8();
+                    logWrite("Attached (window). image=%s opacity=%d",
+                             img.isEmpty() ? "(empty)" : img.constData(), m_pendingOpacity);
+                }
+                return; // done
+            }
+            mo = mo->superClass();
+        }
+    }
 }
