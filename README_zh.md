@@ -51,7 +51,7 @@ DebugLog=0       ; 0 = 关闭日志, 1 = 写入 bgpatch.log 用于调试
 需要 Octave 自带的 MSYS2/MinGW 工具链。
 
 ```batch
-cd octave-bg-patcher
+cd Octave-Background-Patcher
 set "MINGW=<octave根目录>\mingw64"
 set "PATH=%MINGW%\bin;%PATH%"
 set "QT6=%MINGW%\qt6"
