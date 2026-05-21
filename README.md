@@ -54,7 +54,7 @@ Changes take effect within 3 seconds — no restart needed.
 Requires the MSYS2/MinGW toolchain included with Octave.
 
 ```batch
-cd octave-bg-patcher
+cd Octave-Background-Patcher
 set "MINGW=<octave_root>\mingw64"
 set "PATH=%MINGW%\bin;%PATH%"
 set "QT6=%MINGW%\qt6"
