@@ -197,9 +197,8 @@ void BackgroundImageEffect::attachToWindow(QWidget *mainWindow)
     // intercept mouse events before they could pass through the overlay.
     m_overlay = new OverlayWidget(false, nullptr);
 
-    // Frameless tool window: no taskbar entry, stays above the target
-    m_overlay->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint |
-                               Qt::WindowStaysOnTopHint);
+    // Frameless tool window: no taskbar entry
+    m_overlay->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
     m_overlay->setAttribute(Qt::WA_TranslucentBackground);
     m_overlay->setAttribute(Qt::WA_ShowWithoutActivating);
     m_overlay->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -213,6 +212,14 @@ void BackgroundImageEffect::attachToWindow(QWidget *mainWindow)
 
     // Position over the main window in screen coordinates
     repositionOverlay();
+
+    // Bind the overlay as an Owned window of the Octave main window at the
+    // Win32 level.  This keeps the overlay always on top of Octave, but lets
+    // other applications cover both when they are moved over Octave.
+    HWND hwndOverlay = reinterpret_cast<HWND>(m_overlay->winId());
+    HWND hwndMain = reinterpret_cast<HWND>(m_editor->window()->winId());
+    SetWindowLongPtrW(hwndOverlay, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(hwndMain));
+
     m_overlay->show();
 
     logWrite("Overlay created (window-top-level): pos=(%d,%d) size=(%d,%d) imageNull=%d opacity=%d",
@@ -282,11 +289,12 @@ void BackgroundImageEffect::repositionOverlay()
         m_overlay->setGeometry(topLeft.x(), topLeft.y(), sz.width(), sz.height());
         m_overlay->raise();
 
-        // Keep on top without stealing focus
+        // The owner relationship keeps the overlay on top of the main window.
+        // No need for HWND_TOPMOST — SWP_NOZORDER lets the system handle it.
         if (m_overlay->internalWinId())
             SetWindowPos(reinterpret_cast<HWND>(m_overlay->winId()),
-                         HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                         nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
         return;
     }
 
